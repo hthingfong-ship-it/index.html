@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Cash Flow Projection · Day Activate × Night Burn Reset</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0d1117; color: #e6edf3; font-family: 'IBM Plex Mono', monospace; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #161b22; }
+    ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+    button { font-family: 'IBM Plex Mono', monospace; cursor: pointer; }
+    table { border-collapse: collapse; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState } = React;
+    const {
+      ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
+      Tooltip, ResponsiveContainer, ReferenceLine, Legend
+    } = Recharts;
+
+    // ─── CONSTANTS ──────────────────────────────────────────────────────────────
+    const AOV            = 500;
+    const COGS_PER_ORD   = 100;
+    const SHIP           = 10;
+    const OEM            = 100000;
+    const INIT_DAY       = 1000;
+    const INIT_NIGHT     = 1000;
+    const REORDER_COST   = 100000;
+    const REORDER_QTY    = 1000;
+    const REORDER_THRESH = 300;
+    const SALARY         = 8000;
+    const OFFICE         = 3000;
+    const DIR_POOL       = 0.20;
+
+    const MO = ["M1","M2","M3","M4","M5","M6","M7","M8","M9","M10","M11","M12"];
+
+    const RAW = {
+      s1: MO.map(() => [15000, 0]),
+      s2: MO.map(() => [15000, 15000]),
+      s3: [
+        [15000,15000],[15000,30000],[16700,50000],
+        [21700,65000],[26700,80000],[33300,100000],
+        [40000,130000],[50000,160000],[60000,190000],
+        [70000,220000],[80000,250000],[90000,280000],
+      ],
+    };
+
+    function build(raw, key) {
+      let cumOut=0, cumRev=0, cumOrds=0;
+      let dayStock=INIT_DAY, nightStock=INIT_NIGHT;
+      return raw.map(([ads, rev], i) => {
+        const isExp = i >= 6;
+        const oem   = i === 0 ? OEM : 0;
+        const ords  = rev > 0 ? Math.round(rev / AOV) : 0;
+        const ship  = ords * SHIP;
+        const cogs  = ords * COGS_PER_ORD;
+        const projDay = dayStock - ords;
+        const projNight = nightStock - ords;
+        const needReord = (projDay < REORDER_THRESH || projNight < REORDER_THRESH) && i > 0 && rev > 0;
+        const reorder   = needReord ? REORDER_COST : 0;
+        if (needReord) { dayStock += REORDER_QTY; nightStock += REORDER_QTY; }
+        dayStock   = Math.max(0, dayStock   - ords);
+        nightStock = Math.max(0, nightStock - ords);
+        const office = key === "s3" && i >= 5 ? OFFICE : 0;
+        const salary = key === "s3" && i >= 5 ? SALARY : 0;
+        const totalOut  = oem + ads + ship + reorder + office + salary;
+        const netMo     = rev - totalOut;
+        const netProfit = rev - cogs - ads - ship - salary - office;
+        const dirPool   = netProfit > 0 ? Math.round(netProfit * DIR_POOL) : 0;
+        const forInvRec = netProfit > 0 ? Math.round(netProfit * 0.80) : 0;
+        const roas = ads > 0 ? +(rev / ads).toFixed(2) : 0;
+        cumOut += totalOut; cumRev += rev; cumOrds += ords;
+        return {
+          month: MO[i], phase: isExp ? "Expansion" : "Validation",
+          ads, oem, ship, reorder, office, salary, cogs,
+          totalOut, rev, ords, roas, netMo, netProfit, dirPool, forInvRec,
+          cumRev, cumOut, cumOrds, pnl: cumRev - cumOut,
+          dayStock, nightStock, needReord,
+        };
+      });
+    }
+
+    const SC = {
+      s1: { key:"s1", emoji:"⛔", label:"Phase 1", tag:"1:0 ROAS", sub:"Zero sales · absolute worst",       color:"#f85149", data:build(RAW.s1,"s1") },
+      s2: { key:"s2", emoji:"⚠️",  label:"Phase 2", tag:"1:1 ROAS", sub:"30 orders/mo · still net negative",  color:"#f0883e", data:build(RAW.s2,"s2") },
+      s3: { key:"s3", emoji:"✅", label:"Phase 3", tag:"1:3 ROAS", sub:"RM100K by M6 · scale to RM280K",    color:"#3fb950", data:build(RAW.s3,"s3") },
+    };
+
+    const fmtRM = (v) => {
+      if (v==null) return "—";
+      const n=Math.abs(v), s=v<0?"-":"";
+      if (n>=1_000_000) return `${s}RM${(n/1e6).toFixed(2)}M`;
+      if (n>=1_000)     return `${s}RM${(n/1000).toFixed(1)}K`;
+      return `${s}RM${n}`;
+    };
+    const fmtFull = v => {
+      const n=Math.abs(v), s=v<0?"-":v>0?"+":"";
+      return `${s}RM${n.toLocaleString()}`;
+    };
+
+    const Tip = ({ active, payload, label }) => {
+      if (!active||!payload?.length) return null;
+      const r = payload[0]?.payload;
+      return (
+        <div style={{background:"#0d1117",border:"1px solid #30363d",borderRadius:8,padding:"12px 15px",fontFamily:"monospace",fontSize:11,minWidth:200}}>
+          <div style={{color:"#58a6ff",fontWeight:700,marginBottom:7}}>{label} · {r?.phase}</div>
+          <div style={{color:"#7d8590",marginBottom:5}}>Orders: <b style={{color:"#e6edf3"}}>{r?.ords}/mo</b> &nbsp;ROAS: <b style={{color:r?.roas>=3?"#3fb950":r?.roas>=1?"#f0883e":"#f85149"}}>{r?.roas}×</b></div>
+          {payload.map((p,i)=><div key={i} style={{color:p.color,marginBottom:2}}>{p.name}: <span style={{color:"#e6edf3"}}>{fmtRM(p.value)}</span></div>)}
+        </div>
+      );
+    };
+
+    const Tag = ({label,color,small})=>(
+      <span style={{background:`${color}22`,color,fontSize:small?8:9,fontWeight:700,padding:"1px 7px",borderRadius:4,letterSpacing:0.5,whiteSpace:"nowrap"}}>{label}</span>
+    );
+
+    const KPI = ({label,value,sub,color})=>(
+      <div style={{background:"#161b22",border:`1px solid ${color}44`,borderRadius:9,padding:"11px 14px",flex:1,minWidth:110}}>
+        <div style={{color:"#7d8590",fontSize:9,textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>{label}</div>
+        <div style={{color,fontSize:17,fontWeight:700,fontFamily:"'Space Grotesk',sans-serif",lineHeight:1.1,marginBottom:2}}>{value}</div>
+        {sub&&<div style={{color:"#7d8590",fontSize:9}}>{sub}</div>}
+      </div>
+    );
+
+    function App() {
+      const [tab,  setTab]  = useState("s3");
+      const [view, setView] = useState("cashflow");
+      const sc = SC[tab];
+      const d  = sc.data;
+      const last = d[11];
+      const breakEven = d.find(r=>r.pnl>=0);
+      const trigger   = d.find(r=>r.roas>=3);
+      const totalDirPool = d.reduce((s,r)=>s+r.dirPool,0);
+
+      return (
+        <div style={{background:"#0d1117",minHeight:"100vh",padding:"22px 18px"}}>
+
+          {/* HEADER */}
+          <div style={{marginBottom:18}}>
+            <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:4}}>
+              <div style={{width:6,height:6,borderRadius:"50%",background:"#3fb950",boxShadow:"0 0 7px #3fb950"}}/>
+              <span style={{color:"#7d8590",fontSize:9,letterSpacing:2,textTransform:"uppercase"}}>Cash Flow Projection · 12 Months · Confidential</span>
+            </div>
+            <h1 style={{fontFamily:"'Space Grotesk',sans-serif",fontSize:21,fontWeight:700,margin:"0 0 2px"}}>Day Activate × Night Burn Reset</h1>
+            <p style={{color:"#7d8590",fontSize:10,margin:0}}>AOV RM500 · Cost RM50/box · 80% Gross Margin · Shipping RM10/order · OEM RM100K upfront · Dir Pool 20%</p>
+          </div>
+
+          {/* PHASE 2 QUICK REF */}
+          <div style={{background:"#161b22",border:"1px solid #f0883e44",borderRadius:10,padding:"13px 17px",marginBottom:16}}>
+            <div style={{color:"#f0883e",fontSize:9,textTransform:"uppercase",letterSpacing:1.5,marginBottom:10}}>⚠️ Phase 2 Reference · 1:1 ROAS · Orders & Boxes Per Month</div>
+            <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+              {[{rev:"RM12,000",ords:24,perProd:24,total:48,months:Math.floor(2000/48)},{rev:"RM15,000",ords:30,perProd:30,total:60,months:Math.floor(2000/60)}].map(r=>(
+                <div key={r.rev} style={{flex:1,minWidth:180,background:"#0d1117",borderRadius:8,padding:"10px 14px",border:"1px solid #30363d"}}>
+                  <div style={{color:"#f0883e",fontWeight:700,fontFamily:"'Space Grotesk',sans-serif",fontSize:13,marginBottom:8}}>{r.rev} / month</div>
+                  {[["Orders/month",`${r.ords} orders`,"#e6edf3"],["Day Activate",`${r.perProd} boxes`,"#f0883e"],["Night Burn Reset",`${r.perProd} boxes`,"#bc8cff"],["Total boxes used",`${r.total} boxes/mo`,"#e6edf3"],["Stock lasts",`~${r.months} months`,"#3fb950"]].map(([k,v,c])=>(
+                    <div key={k} style={{display:"flex",justifyContent:"space-between",fontSize:10,marginBottom:3}}>
+                      <span style={{color:"#7d8590"}}>{k}</span><span style={{color:c,fontWeight:600}}>{v}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+              <div style={{flex:1,minWidth:180,background:"#0d1117",borderRadius:8,padding:"10px 14px",border:"1px solid #30363d"}}>
+                <div style={{color:"#7d8590",fontSize:9,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Key Note · Phase 2</div>
+                <div style={{color:"#7d8590",fontSize:10,lineHeight:1.7}}>
+                  At 1:1 ROAS, net profit is <span style={{color:"#f85149"}}>negative</span> — no Director Pool applies.<br/>
+                  Initial 2,000 boxes lasts <span style={{color:"#3fb950"}}>33–41 months</span> at this rate.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* M12 COMPARISON */}
+          <div style={{background:"#161b22",border:"1px solid #30363d",borderRadius:10,padding:"13px 17px",marginBottom:16}}>
+            <div style={{color:"#7d8590",fontSize:9,textTransform:"uppercase",letterSpacing:1.5,marginBottom:11}}>Month 12 · Outcome Comparison · Click to Switch</div>
+            <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+              {Object.values(SC).map(s=>{
+                const l=s.data[11];
+                const be=s.data.find(r=>r.pnl>=0);
+                const pool=s.data.reduce((acc,r)=>acc+r.dirPool,0);
+                const active=tab===s.key;
+                return (
+                  <div key={s.key} onClick={()=>setTab(s.key)} style={{flex:1,minWidth:150,background:active?`${s.color}12`:"#0d1117",border:`1.5px solid ${active?s.color:"#30363d"}`,borderRadius:9,padding:"11px 13px",cursor:"pointer",transition:"all 0.2s"}}>
+                    <div style={{color:s.color,fontSize:10,fontWeight:700,marginBottom:7}}>{s.emoji} {s.label} · {s.tag}</div>
+                    {[["Total Orders",l.cumOrds.toLocaleString(),"#58a6ff"],["Total Sales",fmtRM(l.cumRev),"#3fb950"],["Total Out",fmtRM(l.cumOut),"#f85149"],["Dir Pool Acc.",pool>0?`RM${pool.toLocaleString()}`:"—","#bc8cff"],["Net P&L",fmtFull(l.pnl),l.pnl>=0?"#3fb950":"#f85149"],["Break-even",be?be.month:"N/A","#58a6ff"]].map(([k,v,c])=>(
+                      <div key={k} style={{display:"flex",justifyContent:"space-between",fontSize:10,marginBottom:3}}>
+                        <span style={{color:"#7d8590"}}>{k}</span><span style={{color:c,fontWeight:700}}>{v}</span>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* KPIS */}
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14}}>
+            <KPI label="Total Orders" value={last.cumOrds.toLocaleString()} sub="cumulative 12mo" color="#58a6ff"/>
+            <KPI label="Total Revenue" value={fmtRM(last.cumRev)} sub={`RM${Math.round(last.cumRev/12/1000)}K avg/mo`} color="#3fb950"/>
+            <KPI label="M12 Monthly Rev" value={fmtRM(last.rev)} sub={`${last.ords} orders · ${last.roas}× ROAS`} color={last.roas>=3?"#3fb950":last.roas>=1?"#f0883e":"#f85149"}/>
+            <KPI label="Dir Pool (12M)" value={totalDirPool>0?`RM${totalDirPool.toLocaleString()}`:"RM0"} sub="TF + Gateyen · 20%" color="#bc8cff"/>
+            <KPI label="Net P&L M12" value={fmtFull(last.pnl)} sub={breakEven?`Break-even ${breakEven.month}`:"No break-even"} color={last.pnl>=0?"#3fb950":"#f85149"}/>
+          </div>
+
+          {/* CHART */}
+          <div style={{background:"#161b22",border:"1px solid #30363d",borderRadius:10,padding:"16px 10px 8px",marginBottom:14}}>
+            <div style={{color:"#7d8590",fontSize:9,paddingLeft:12,marginBottom:2,textTransform:"uppercase",letterSpacing:1}}>Monthly Revenue vs Cash Out · {sc.label}</div>
+            <ResponsiveContainer width="100%" height={220}>
+              <ComposedChart data={d} margin={{top:4,right:12,left:4,bottom:0}}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#21262d"/>
+                <XAxis dataKey="month" tick={{fill:"#7d8590",fontSize:10}} axisLine={false} tickLine={false}/>
+                <YAxis tickFormatter={v=>fmtRM(v)} tick={{fill:"#7d8590",fontSize:9}} axisLine={false} tickLine={false}/>
+                <Tooltip content={<Tip/>}/>
+                {tab==="s3"&&<ReferenceLine x="M6" stroke="#58a6ff" strokeDasharray="4 2" label={{value:"100K ✓",fill:"#58a6ff",fontSize:9,position:"insideTopRight"}}/>}
+                {tab==="s3"&&trigger&&<ReferenceLine x={trigger.month} stroke="#3fb950" strokeDasharray="4 2" label={{value:"1:3 hit",fill:"#3fb950",fontSize:9,position:"insideTopLeft"}}/>}
+                <Bar dataKey="oem"     name="OEM"     stackId="o" fill="#f85149" opacity={0.9}/>
+                <Bar dataKey="ads"     name="Ads"     stackId="o" fill="#f0883e" opacity={0.9}/>
+                <Bar dataKey="ship"    name="Shipping" stackId="o" fill="#d29922" opacity={0.85}/>
+                <Bar dataKey="reorder" name="Restock"  stackId="o" fill="#bc8cff" opacity={0.85}/>
+                <Bar dataKey="salary"  name="Salary"   stackId="o" fill="#58a6ff" opacity={0.85}/>
+                <Bar dataKey="office"  name="Office"   stackId="o" fill="#3fb950" opacity={0.7} radius={[3,3,0,0]}/>
+                <Line type="monotone" dataKey="rev" name="Revenue" stroke="#3fb950" strokeWidth={2.5} dot={{fill:"#3fb950",r:3}}/>
+                <Legend wrapperStyle={{fontSize:10,color:"#7d8590",paddingTop:8}}/>
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* TABLE TABS */}
+          <div style={{display:"flex",gap:8,marginBottom:12,alignItems:"center",flexWrap:"wrap"}}>
+            {[{k:"cashflow",l:"💰 Cash Flow"},{k:"inventory",l:"📦 Inventory Tracker"}].map(({k,l})=>(
+              <button key={k} onClick={()=>setView(k)} style={{padding:"7px 16px",borderRadius:7,border:`1px solid ${view===k?sc.color:"#30363d"}`,background:view===k?`${sc.color}18`:"transparent",color:view===k?sc.color:"#7d8590",fontSize:10,transition:"all 0.2s"}}>
+                {l}
+              </button>
+            ))}
+            <div style={{marginLeft:"auto",color:"#7d8590",fontSize:10}}>{sc.emoji} {sc.label} · {sc.sub}</div>
+          </div>
+
+          {/* CASH FLOW TABLE */}
+          {view==="cashflow" && (
+            <div style={{background:"#161b22",border:"1px solid #30363d",borderRadius:10,overflow:"hidden",marginBottom:14}}>
+              <div style={{padding:"10px 16px",borderBottom:"1px solid #30363d",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+                <span style={{fontFamily:"'Space Grotesk',sans-serif",fontWeight:600,fontSize:13}}>Monthly Cash Flow · Every Month</span>
+                {tab==="s3"&&<Tag label="Salary + Office from M6 · Dir Pool 20% monthly" color="#bc8cff"/>}
+              </div>
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",fontSize:10}}>
+                  <thead>
+                    <tr style={{background:"#0d1117"}}>
+                      {[{h:"Month",a:"left"},{h:"Phase",a:"left"},{h:"Ads",a:"right"},{h:"Orders/mo",a:"right"},{h:"Revenue",a:"right"},{h:"ROAS",a:"right"},{h:"Gross Profit",a:"right"},{h:"Shipping",a:"right"},{h:"Office Rent",a:"right"},{h:"Salary",a:"right"},{h:"OEM/Restock",a:"right"},{h:"Total Out",a:"right"},{h:"Net Mo. CF",a:"right"},{h:"Net Profit",a:"right"},{h:"Dir Pool 20%",a:"right"},{h:"→ Inv. Recov.",a:"right"},{h:"Total Sales",a:"right"},{h:"Cum. P&L",a:"right"}].map(({h,a})=>(
+                        <th key={h} style={{padding:"7px 10px",textAlign:a,color:"#7d8590",fontWeight:600,fontSize:8.5,textTransform:"uppercase",letterSpacing:0.3,borderBottom:"1px solid #21262d",whiteSpace:"nowrap"}}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {d.map((r,i)=>{
+                      const isExp=r.phase==="Expansion";
+                      const isStart=i===6;
+                      const rc=r.roas>=3?"#3fb950":r.roas>=1?"#f0883e":"#f85149";
+                      const other=r.oem+r.reorder;
+                      return (
+                        <tr key={r.month} style={{borderTop:isStart?"2px solid #58a6ff":"1px solid #21262d",background:i%2===0?"#161b22":"#0d1117"}}>
+                          <td style={{padding:"7px 10px",color:"#e6edf3",fontWeight:700}}>{r.month}</td>
+                          <td style={{padding:"7px 10px"}}>
+                            <Tag label={r.phase} color={isExp?"#58a6ff":"#f0883e"} small/>
+                            {r.needReord&&<span style={{marginLeft:4}}><Tag label="RESTOCK" color="#bc8cff" small/></span>}
+                          </td>
+                          <td style={{padding:"7px 10px",textAlign:"right",color:"#f0883e"}}>RM{r.ads.toLocaleString()}</td>
+                          <td style={{padding:"7px 10px",textAlign:"right",color:"#e6edf3",fontWeight:700}}>{r.ords>0?r.ords:<span style={{color:"#3a3f47"}}>—</span>}</td>
+                          <td style={{padding:"7px 10px",textAlign:"right",color:"#3fb950",fontWeight:700}}>{r.rev>0?`RM${r.rev.toLocaleString()}`:<span style={{color:"#3a3f47"}}>—</span>}</td>
+                          <td style={{padding:"7px 10px",textAlign:"right"}}>
+                            <span style={{color:rc,fontWeight:700,background:`${rc}22`,padding:"1px 6px",borderRadius:4}}>{r.rev===0?"N/A":`${r.roas}×`}</span>
+                          </td>
+                          <td style={{padding:"7px 10px",textAlign:"right",color:r.rev>0?"#3fb950":"#3a3f47"}}>{r.rev>0?`RM${Math.round(r.rev*0.8).toLocaleString()}`:"—"}</td>
+                          <td style={{padding:"7px 10px",textAlign:"right",color:r.ship>0?"#d29922":"#3a3f47"}}>{r.ship>0?`RM${r.ship.toLocaleString()}`:"—"}</td>
+                          <td style={{padding:"7px 10px",textAlign:"right",color:r.office>0?"#3fb950":"#3a3f47"}}>{r.office>0?`RM${r.office.toLocaleString()}`:"—"}</td>
+                          <td style={{padding:"7px 10px",textAlign:"right",color:r.salary>0?"#58a6ff":"#3a3f47"}}>{r.salary>0?`RM${r.salary.toLocaleString()}`:"—"}</td>
+                          <td style={{padding:"7px 10px",textAlign:"right",color:other>0?"#bc8cff":"#3a3f47"}}>{other>0?`RM${other.toLocaleString()}`:"—"}</td>
+                          <td style={{padding:"7px 10px",textAlign:"right",color:"#f85149",fontWeight:600}}>RM{r.totalOut.toLocaleString()}</td>
+                          <td style={{padding:"7px 10px",textAlign:"right",color:r.netMo>=0?"#3fb950":"#f85149",fontWeight:700}}>{r.netMo>=0?"+":""}{fmtRM(r.netMo)}</td>
+                          <td style={{padding:"7px 10px",textAlign:"right",color:r.netProfit>=0?"#3fb950":"#f85149"}}>{r.netProfit>=0?"+":""}{fmtRM(r.netProfit)}</td>
+                          <td style={{padding:"7px 10px",textAlign:"right",color:r.dirPool>0?"#bc8cff":"#3a3f47",fontWeight:700}}>{r.dirPool>0?`RM${r.dirPool.toLocaleString()}`:"—"}</td>
+                          <td style={{padding:"7px 10px",textAlign:"right",color:r.forInvRec>0?"#58a6ff":"#3a3f47"}}>{r.forInvRec>0?`RM${r.forInvRec.toLocaleString()}`:"—"}</td>
+                          <td style={{padding:"7px 10px",textAlign:"right",color:"#58a6ff",fontWeight:600}}>{fmtRM(r.cumRev)}</td>
+                          <td style={{padding:"7px 10px",textAlign:"right",color:r.pnl>=0?"#3fb950":"#f85149",fontWeight:700}}>{r.pnl>=0?"+":""}{fmtRM(r.pnl)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{borderTop:"2px solid #30363d",background:"#0d1117"}}>
+                      <td colSpan={2} style={{padding:"8px 10px",color:"#e6edf3",fontWeight:700,fontSize:11}}>TOTAL</td>
+                      <td style={{padding:"8px 10px",textAlign:"right",color:"#f0883e",fontWeight:700}}>{fmtRM(d.reduce((s,r)=>s+r.ads,0))}</td>
+                      <td style={{padding:"8px 10px",textAlign:"right",color:"#e6edf3",fontWeight:700}}>{last.cumOrds.toLocaleString()}</td>
+                      <td style={{padding:"8px 10px",textAlign:"right",color:"#3fb950",fontWeight:700}}>{fmtRM(last.cumRev)}</td>
+                      <td colSpan={9} style={{padding:"8px 10px",color:"#7d8590",textAlign:"right"}}>—</td>
+                      <td style={{padding:"8px 10px",textAlign:"right",color:"#f85149",fontWeight:700}}>{fmtRM(last.cumOut)}</td>
+                      <td style={{padding:"8px 10px"}}/>
+                      <td style={{padding:"8px 10px"}}/>
+                      <td style={{padding:"8px 10px",textAlign:"right",color:"#bc8cff",fontWeight:700}}>RM{totalDirPool.toLocaleString()}</td>
+                      <td style={{padding:"8px 10px"}}/>
+                      <td style={{padding:"8px 10px",textAlign:"right",color:"#58a6ff",fontWeight:700}}>{fmtRM(last.cumRev)}</td>
+                      <td style={{padding:"8px 10px",textAlign:"right",color:last.pnl>=0?"#3fb950":"#f85149",fontWeight:700}}>{fmtFull(last.pnl)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* INVENTORY TABLE */}
+          {view==="inventory" && (
+            <div style={{background:"#161b22",border:"1px solid #30363d",borderRadius:10,overflow:"hidden",marginBottom:14}}>
+              <div style={{padding:"10px 16px",borderBottom:"1px solid #30363d",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+                <span style={{fontFamily:"'Space Grotesk',sans-serif",fontWeight:600,fontSize:13}}>📦 Inventory Tracker · Per Month</span>
+                <span style={{color:"#7d8590",fontSize:10}}>Start: 1,000 Day + 1,000 Night · Reorder &lt;300/product = RM100K</span>
+              </div>
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",fontSize:10}}>
+                  <thead>
+                    <tr style={{background:"#0d1117"}}>
+                      {[{h:"Month",a:"left"},{h:"Phase",a:"left"},{h:"Orders",a:"right"},{h:"Day Used",a:"right"},{h:"Night Used",a:"right"},{h:"Day Stock",a:"right"},{h:"Night Stock",a:"right"},{h:"Total Stock",a:"right"},{h:"Cum. Orders",a:"right"},{h:"Reorder?",a:"center"},{h:"Reorder Cost",a:"right"},{h:"Status",a:"center"}].map(({h,a})=>(
+                        <th key={h} style={{padding:"7px 11px",textAlign:a,color:"#7d8590",fontWeight:600,fontSize:8.5,textTransform:"uppercase",letterSpacing:0.3,borderBottom:"1px solid #21262d",whiteSpace:"nowrap"}}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {d.map((r,i)=>{
+                      const total=r.dayStock+r.nightStock;
+                      const sc=total>1200?"#3fb950":total>600?"#d29922":"#f85149";
+                      const sl=total>1200?"Healthy":total>600?"Monitor":"Low!";
+                      return (
+                        <tr key={r.month} style={{borderTop:i===6?"2px solid #58a6ff":"1px solid #21262d",background:i%2===0?"#161b22":"#0d1117"}}>
+                          <td style={{padding:"7px 11px",color:"#e6edf3",fontWeight:700}}>{r.month}</td>
+                          <td style={{padding:"7px 11px"}}><Tag label={r.phase} color={r.phase==="Expansion"?"#58a6ff":"#f0883e"} small/></td>
+                          <td style={{padding:"7px 11px",textAlign:"right",color:"#e6edf3",fontWeight:700}}>{r.ords>0?r.ords:<span style={{color:"#3a3f47"}}>—</span>}</td>
+                          <td style={{padding:"7px 11px",textAlign:"right",color:r.ords>0?"#f0883e":"#3a3f47"}}>{r.ords>0?r.ords:"—"}</td>
+                          <td style={{padding:"7px 11px",textAlign:"right",color:r.ords>0?"#bc8cff":"#3a3f47"}}>{r.ords>0?r.ords:"—"}</td>
+                          <td style={{padding:"7px 11px",textAlign:"right",color:r.dayStock<300?"#f85149":r.dayStock<600?"#d29922":"#e6edf3",fontWeight:700}}>{r.dayStock}</td>
+                          <td style={{padding:"7px 11px",textAlign:"right",color:r.nightStock<300?"#f85149":r.nightStock<600?"#d29922":"#e6edf3",fontWeight:700}}>{r.nightStock}</td>
+                          <td style={{padding:"7px 11px",textAlign:"right",color:"#e6edf3",fontWeight:600}}>{total.toLocaleString()}</td>
+                          <td style={{padding:"7px 11px",textAlign:"right",color:"#58a6ff",fontWeight:600}}>{r.cumOrds.toLocaleString()}</td>
+                          <td style={{padding:"7px 11px",textAlign:"center"}}>{r.needReord?<Tag label="RESTOCK RM100K" color="#bc8cff" small/>:<span style={{color:"#3a3f47",fontSize:9}}>—</span>}</td>
+                          <td style={{padding:"7px 11px",textAlign:"right",color:r.reorder>0?"#bc8cff":"#3a3f47"}}>{r.reorder>0?`RM${r.reorder.toLocaleString()}`:"—"}</td>
+                          <td style={{padding:"7px 11px",textAlign:"center"}}><Tag label={sl} color={sc} small/></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* DIRECTOR POOL NOTE */}
+          <div style={{background:"#161b22",border:"1px solid #bc8cff44",borderRadius:9,padding:"12px 16px",marginBottom:14}}>
+            <div style={{color:"#bc8cff",fontSize:9,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Director Pool · 20% · Distributed Monthly</div>
+            <div style={{display:"flex",gap:16,flexWrap:"wrap",fontSize:10,color:"#7d8590",lineHeight:1.8}}>
+              <div><span style={{color:"#e6edf3"}}>Rate: </span>20% of monthly net profit</div>
+              <div><span style={{color:"#e6edf3"}}>Recipients: </span>TF 50% + Gateyen 50%</div>
+              <div><span style={{color:"#e6edf3"}}>Condition: </span>Only when monthly net profit is positive</div>
+              <div><span style={{color:"#e6edf3"}}>Frequency: </span>Distributed monthly</div>
+              <div><span style={{color:"#e6edf3"}}>Remaining 80%: </span>Goes toward investor recovery first</div>
+              <div><span style={{color:"#e6edf3"}}>Phase 1 & 2: </span>No pool — no net profit generated</div>
+            </div>
+          </div>
+
+          {/* ASSUMPTIONS */}
+          <div style={{background:"#161b22",border:"1px solid #30363d",borderRadius:8,padding:"11px 16px"}}>
+            <div style={{color:"#7d8590",fontSize:9,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Assumptions</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:"3px 22px",fontSize:10,lineHeight:2}}>
+              {[
+                ["AOV","RM500 · 1-month supply (conservative entry package)"],
+                ["Products","Day Activate + Night Burn Reset · 1 box each per order"],
+                ["COGS/order","RM100 (2 boxes × RM50/box) · Gross margin: 80%"],
+                ["OEM","RM100K one-time at M1 · 1,000 boxes × 2 SKUs"],
+                ["Ads Validation","RM15,000/month (fixed M1–M6)"],
+                ["Salary","CEO RM4K + COO RM4K = RM8K/mo · starts M6 when revenue hits RM100K"],
+                ["Office Rent","RM3,000/mo · starts M6 onwards"],
+                ["Reorder","RM100K per restock · triggers when stock < 300 per product"],
+                ["Director Pool","20% of monthly net profit · TF + Gateyen 50/50 · distributed monthly"],
+                ["Expansion Fund","RM1M · unlocked post-M6 validation · amplifier only"],
+              ].map(([k,v])=>(
+                <div key={k}><span style={{color:"#7d8590"}}>{k}: </span><span style={{color:"#e6edf3"}}>{v}</span></div>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App/>);
+  </script>
+</body>
+</html>
